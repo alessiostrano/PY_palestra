@@ -1,88 +1,143 @@
 """
-Modulo per il rilevamento delle pose usando MediaPipe
+Modulo per il rilevamento delle pose usando YOLO11 (Ultralytics)
 """
 import cv2
-import mediapipe as mp
 import numpy as np
+from ultralytics import YOLO
+import torch
 
 class PoseDetector:
     """
-    Classe per rilevare le pose umane utilizzando MediaPipe
+    Classe per rilevare le pose umane utilizzando YOLO11
     """
 
-    def __init__(self, min_detection_confidence=0.5, min_tracking_confidence=0.5):
+    def __init__(self, model_name='yolo11n-pose.pt', confidence=0.5):
         """
-        Inizializza il detector delle pose
+        Inizializza il detector delle pose con YOLO11
 
         Args:
-            min_detection_confidence (float): Soglia minima per il rilevamento
-            min_tracking_confidence (float): Soglia minima per il tracking
+            model_name (str): Nome del modello YOLO11 pose
+            confidence (float): Soglia minima per il rilevamento
         """
-        self.mp_drawing = mp.solutions.drawing_utils
-        self.mp_pose = mp.solutions.pose
+        try:
+            # Carica il modello YOLO11 per pose estimation
+            self.model = YOLO(model_name)
+            self.confidence = confidence
 
-        self.pose = self.mp_pose.Pose(
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=min_tracking_confidence
-        )
+            # Definisce i keypoints COCO (17 punti)
+            self.keypoint_names = [
+                'nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear',
+                'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow',
+                'left_wrist', 'right_wrist', 'left_hip', 'right_hip',
+                'left_knee', 'right_knee', 'left_ankle', 'right_ankle'
+            ]
+
+            # Mapping per compatibilità con il codice esistente
+            self.landmark_mapping = {
+                'nose': 0,
+                'left_shoulder': 5, 'right_shoulder': 6,
+                'left_elbow': 7, 'right_elbow': 8,
+                'left_wrist': 9, 'right_wrist': 10,
+                'left_hip': 11, 'right_hip': 12,
+                'left_knee': 13, 'right_knee': 14,
+                'left_ankle': 15, 'right_ankle': 16
+            }
+
+            print("✅ YOLO11 Pose Detection inizializzato correttamente")
+
+        except Exception as e:
+            print(f"❌ Errore nell'inizializzazione YOLO11: {e}")
+            self.model = None
 
     def detect_pose(self, image):
         """
-        Rileva le pose nell'immagine fornita
+        Rileva le pose nell'immagine fornita usando YOLO11
 
         Args:
             image: Immagine BGR da OpenCV
 
         Returns:
-            tuple: (image_rgb, results) dove results contiene i landmark delle pose
+            tuple: (processed_image, results) dove results contiene i keypoints
         """
-        # Converti BGR a RGB
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image_rgb.flags.writeable = False
+        if not self.model:
+            return image, None
 
-        # Processa l'immagine
-        results = self.pose.process(image_rgb)
+        try:
+            # Esegue l'inferenza con YOLO11
+            results = self.model(image, conf=self.confidence, verbose=False)
 
-        # Riconverti a BGR per la visualizzazione
-        image_rgb.flags.writeable = True
-        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+            # Crea una copia dell'immagine per il disegno
+            processed_image = image.copy()
 
-        return image_bgr, results
+            # Estrae i risultati
+            if len(results) > 0 and results[0].keypoints is not None:
+                return processed_image, results[0]
+            else:
+                return processed_image, None
+
+        except Exception as e:
+            print(f"Errore nel rilevamento pose: {e}")
+            return image, None
 
     def draw_landmarks(self, image, results):
         """
-        Disegna i landmark delle pose sull'immagine
+        Disegna i keypoints delle pose sull'immagine
 
         Args:
             image: Immagine su cui disegnare
-            results: Risultati del rilevamento pose
+            results: Risultati del rilevamento YOLO11
 
         Returns:
-            image: Immagine con i landmark disegnati
+            image: Immagine con i keypoints disegnati
         """
-        if results.pose_landmarks:
-            self.mp_drawing.draw_landmarks(
-                image, 
-                results.pose_landmarks,
-                self.mp_pose.POSE_CONNECTIONS
-            )
-        return image
+        if not results or results.keypoints is None:
+            return image
 
-    def get_landmark_coordinates(self, results, landmark_id):
+        try:
+            # Disegna automaticamente usando YOLO11
+            annotated_image = results.plot()
+            return annotated_image
+
+        except Exception as e:
+            print(f"Errore nel disegno landmarks: {e}")
+            return image
+
+    def get_landmark_coordinates(self, results, landmark_name):
         """
         Estrae le coordinate di un landmark specifico
 
         Args:
-            results: Risultati del rilevamento pose
-            landmark_id: ID del landmark da estrarre
+            results: Risultati del rilevamento YOLO11
+            landmark_name: Nome del landmark da estrarre
 
         Returns:
-            tuple: (x, y, z, visibility) o None se non trovato
+            tuple: (x, y, confidence) o None se non trovato
         """
-        if results.pose_landmarks:
-            landmark = results.pose_landmarks.landmark[landmark_id]
-            return (landmark.x, landmark.y, landmark.z, landmark.visibility)
-        return None
+        if not results or results.keypoints is None:
+            return None
+
+        try:
+            keypoints = results.keypoints.xy[0]  # Prende la prima persona
+            confidences = results.keypoints.conf[0] if results.keypoints.conf is not None else None
+
+            if landmark_name in self.landmark_mapping:
+                idx = self.landmark_mapping[landmark_name]
+                if idx < len(keypoints):
+                    x, y = keypoints[idx]
+                    confidence = confidences[idx] if confidences is not None else 1.0
+
+                    # Normalizza le coordinate (YOLO11 le restituisce in pixel)
+                    h, w = results.orig_shape
+                    x_norm = float(x / w)
+                    y_norm = float(y / h)
+
+                    return (x_norm, y_norm, 0.0, float(confidence))
+
+            return None
+
+        except Exception as e:
+            print(f"Errore nell'estrazione coordinate: {e}")
+            return None
 
     def calculate_angle(self, point1, point2, point3):
         """
@@ -94,61 +149,90 @@ class PoseDetector:
         Returns:
             float: Angolo in gradi
         """
-        # Converti in array numpy
-        a = np.array(point1)  # Primo punto
-        b = np.array(point2)  # Punto centrale (vertice)
-        c = np.array(point3)  # Terzo punto
+        try:
+            # Converti in array numpy
+            a = np.array(point1)  # Primo punto
+            b = np.array(point2)  # Punto centrale (vertice)
+            c = np.array(point3)  # Terzo punto
 
-        # Calcola i vettori
-        ba = a - b
-        bc = c - b
+            # Calcola i vettori
+            ba = a - b
+            bc = c - b
 
-        # Calcola l'angolo usando il prodotto scalare
-        cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
-        angle = np.arccos(np.clip(cosine_angle, -1.0, 1.0))
+            # Calcola l'angolo usando il prodotto scalare
+            cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-8)
+            cosine_angle = np.clip(cosine_angle, -1.0, 1.0)
+            angle = np.arccos(cosine_angle)
 
-        return np.degrees(angle)
+            return np.degrees(angle)
+
+        except Exception as e:
+            print(f"Errore nel calcolo angolo: {e}")
+            return 180.0  # Angolo di default
 
     def get_body_landmarks(self, results):
         """
         Estrae i principali landmark del corpo per l'analisi degli esercizi
 
         Args:
-            results: Risultati del rilevamento pose
+            results: Risultati del rilevamento YOLO11
 
         Returns:
             dict: Dizionario con le coordinate dei principali landmark
         """
-        if not results.pose_landmarks:
+        if not results or results.keypoints is None or len(results.keypoints.xy) == 0:
             return None
 
-        landmarks = {}
+        try:
+            keypoints = results.keypoints.xy[0]  # Prima persona rilevata
+            confidences = results.keypoints.conf[0] if results.keypoints.conf is not None else None
 
-        # Landmark principali per gli esercizi
-        landmark_mapping = {
-            'nose': self.mp_pose.PoseLandmark.NOSE,
-            'left_shoulder': self.mp_pose.PoseLandmark.LEFT_SHOULDER,
-            'right_shoulder': self.mp_pose.PoseLandmark.RIGHT_SHOULDER,
-            'left_elbow': self.mp_pose.PoseLandmark.LEFT_ELBOW,
-            'right_elbow': self.mp_pose.PoseLandmark.RIGHT_ELBOW,
-            'left_wrist': self.mp_pose.PoseLandmark.LEFT_WRIST,
-            'right_wrist': self.mp_pose.PoseLandmark.RIGHT_WRIST,
-            'left_hip': self.mp_pose.PoseLandmark.LEFT_HIP,
-            'right_hip': self.mp_pose.PoseLandmark.RIGHT_HIP,
-            'left_knee': self.mp_pose.PoseLandmark.LEFT_KNEE,
-            'right_knee': self.mp_pose.PoseLandmark.RIGHT_KNEE,
-            'left_ankle': self.mp_pose.PoseLandmark.LEFT_ANKLE,
-            'right_ankle': self.mp_pose.PoseLandmark.RIGHT_ANKLE
+            landmarks = {}
+            h, w = results.orig_shape
+
+            # Estrae i landmark principali per gli esercizi
+            for name, idx in self.landmark_mapping.items():
+                if idx < len(keypoints):
+                    x, y = keypoints[idx]
+                    confidence = confidences[idx] if confidences is not None else 1.0
+
+                    # Solo se il keypoint è abbastanza confidenziale
+                    if confidence > 0.3:
+                        landmarks[name] = {
+                            'x': float(x / w),  # Normalizzato
+                            'y': float(y / h),  # Normalizzato
+                            'z': 0.0,
+                            'visibility': float(confidence)
+                        }
+
+            return landmarks if landmarks else None
+
+        except Exception as e:
+            print(f"Errore nell'estrazione body landmarks: {e}")
+            return None
+
+    def is_model_loaded(self):
+        """
+        Controlla se il modello è caricato correttamente
+
+        Returns:
+            bool: True se il modello è caricato
+        """
+        return self.model is not None
+
+    def get_model_info(self):
+        """
+        Ritorna informazioni sul modello caricato
+
+        Returns:
+            dict: Informazioni sul modello
+        """
+        if not self.model:
+            return {'status': 'Model not loaded'}
+
+        return {
+            'model_type': 'YOLO11 Pose',
+            'confidence_threshold': self.confidence,
+            'keypoints_count': len(self.keypoint_names),
+            'status': 'Ready'
         }
-
-        for name, landmark_id in landmark_mapping.items():
-            coords = self.get_landmark_coordinates(results, landmark_id)
-            if coords:
-                landmarks[name] = {
-                    'x': coords[0],
-                    'y': coords[1],
-                    'z': coords[2],
-                    'visibility': coords[3]
-                }
-
-        return landmarks

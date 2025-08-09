@@ -1,11 +1,13 @@
 """
-Applicazione Streamlit per il fitness tracking con rilevamento pose e feedback audio
+Applicazione Streamlit per il fitness tracking con YOLO11 e feedback audio
+Versione aggiornata compatibile con Python 3.13
 """
 import streamlit as st
 import cv2
 import numpy as np
 import time
 from PIL import Image
+import threading
 
 # Import dei moduli personalizzati
 from pose_detection import PoseDetector
@@ -15,14 +17,14 @@ from audio_feedback import AudioFeedback
 
 class FitnessTracker:
     """
-    Classe principale per l'applicazione di fitness tracking
+    Classe principale per l'applicazione di fitness tracking con YOLO11
     """
 
     def __init__(self):
         """
         Inizializza tutti i componenti dell'applicazione
         """
-        self.pose_detector = PoseDetector()
+        self.pose_detector = None
         self.posture_evaluator = PostureEvaluator()
         self.rep_counter = RepetitionCounter()
         self.audio_feedback = AudioFeedback()
@@ -31,6 +33,25 @@ class FitnessTracker:
         self.is_running = False
         self.current_exercise = 'squat'
         self.webcam = None
+        self.model_loaded = False
+
+        # Inizializza il detector in modo lazy
+        self._init_pose_detector()
+
+    def _init_pose_detector(self):
+        """
+        Inizializza il detector YOLO11 con gestione errori
+        """
+        try:
+            self.pose_detector = PoseDetector(model_name='yolo11n-pose.pt')
+            self.model_loaded = self.pose_detector.is_model_loaded()
+            if self.model_loaded:
+                st.session_state.model_status = "✅ YOLO11 caricato correttamente"
+            else:
+                st.session_state.model_status = "❌ Errore nel caricamento YOLO11"
+        except Exception as e:
+            st.session_state.model_status = f"❌ Errore YOLO11: {str(e)}"
+            self.model_loaded = False
 
     def initialize_webcam(self):
         """
@@ -41,9 +62,20 @@ class FitnessTracker:
         """
         try:
             self.webcam = cv2.VideoCapture(0)
-            self.webcam.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.webcam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            return True
+            if not self.webcam.isOpened():
+                # Prova indici alternativi
+                for i in range(1, 4):
+                    self.webcam = cv2.VideoCapture(i)
+                    if self.webcam.isOpened():
+                        break
+
+            if self.webcam.isOpened():
+                self.webcam.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                self.webcam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                self.webcam.set(cv2.CAP_PROP_FPS, 30)
+                return True
+            return False
+
         except Exception as e:
             st.error(f"Errore nell'inizializzazione della webcam: {e}")
             return False
@@ -66,26 +98,35 @@ class FitnessTracker:
         Returns:
             tuple: (processed_frame, evaluation_result)
         """
-        # Rileva la pose
-        processed_frame, pose_results = self.pose_detector.detect_pose(frame)
+        if not self.model_loaded or not self.pose_detector:
+            return frame, None
 
-        # Disegna i landmark
-        processed_frame = self.pose_detector.draw_landmarks(processed_frame, pose_results)
+        try:
+            # Rileva la pose con YOLO11
+            processed_frame, pose_results = self.pose_detector.detect_pose(frame)
 
-        # Ottieni i landmark del corpo
-        landmarks = self.pose_detector.get_body_landmarks(pose_results)
+            # Disegna i keypoints
+            if pose_results:
+                processed_frame = self.pose_detector.draw_landmarks(processed_frame, pose_results)
 
-        # Valuta la postura basandosi sull'esercizio selezionato
-        evaluation_result = None
-        if landmarks:
-            if self.current_exercise == 'squat':
-                evaluation_result = self.posture_evaluator.evaluate_squat(landmarks, self.pose_detector)
-            elif self.current_exercise == 'pushup':
-                evaluation_result = self.posture_evaluator.evaluate_pushup(landmarks, self.pose_detector)
-            elif self.current_exercise == 'bicep_curl':
-                evaluation_result = self.posture_evaluator.evaluate_bicep_curl(landmarks, self.pose_detector)
+            # Ottieni i landmark del corpo
+            landmarks = self.pose_detector.get_body_landmarks(pose_results)
 
-        return processed_frame, evaluation_result
+            # Valuta la postura basandosi sull'esercizio selezionato
+            evaluation_result = None
+            if landmarks:
+                if self.current_exercise == 'squat':
+                    evaluation_result = self.posture_evaluator.evaluate_squat(landmarks, self.pose_detector)
+                elif self.current_exercise == 'pushup':
+                    evaluation_result = self.posture_evaluator.evaluate_pushup(landmarks, self.pose_detector)
+                elif self.current_exercise == 'bicep_curl':
+                    evaluation_result = self.posture_evaluator.evaluate_bicep_curl(landmarks, self.pose_detector)
+
+            return processed_frame, evaluation_result
+
+        except Exception as e:
+            st.error(f"Errore nel processing frame: {e}")
+            return frame, None
 
     def update_repetitions(self, evaluation_result):
         """
@@ -121,23 +162,38 @@ def main():
     Funzione principale dell'applicazione Streamlit
     """
     st.set_page_config(
-        page_title="Fitness Tracker AI",
+        page_title="Fitness Tracker AI - YOLO11",
         page_icon="💪",
         layout="wide",
         initial_sidebar_state="expanded"
     )
 
     st.title("💪 Fitness Tracker AI")
-    st.subheader("Rilevamento pose e conteggio ripetizioni con feedback audio")
+    st.subheader("🚀 Powered by YOLO11 - Rilevamento pose e feedback audio")
 
     # Inizializza l'app in session state
     if 'fitness_tracker' not in st.session_state:
         st.session_state.fitness_tracker = FitnessTracker()
+        st.session_state.model_status = "⏳ Caricamento YOLO11 in corso..."
 
     fitness_tracker = st.session_state.fitness_tracker
 
+    # Status del modello
+    if hasattr(st.session_state, 'model_status'):
+        if "✅" in st.session_state.model_status:
+            st.success(st.session_state.model_status)
+        else:
+            st.warning(st.session_state.model_status)
+
     # Sidebar con controlli
     st.sidebar.header("⚙️ Controlli")
+
+    # Informazioni sul modello
+    if fitness_tracker.model_loaded:
+        model_info = fitness_tracker.pose_detector.get_model_info()
+        st.sidebar.success(f"🤖 Modello: {model_info['model_type']}")
+    else:
+        st.sidebar.error("❌ YOLO11 non caricato")
 
     # Selezione esercizio
     exercise_options = {
@@ -157,7 +213,8 @@ def main():
     if selected_exercise != fitness_tracker.current_exercise:
         fitness_tracker.current_exercise = selected_exercise
         fitness_tracker.rep_counter.reset()
-        fitness_tracker.audio_feedback.announce_exercise_start(selected_exercise)
+        if fitness_tracker.model_loaded:
+            fitness_tracker.audio_feedback.announce_exercise_start(selected_exercise)
 
     # Controlli audio
     st.sidebar.subheader("🔊 Audio Settings")
@@ -177,7 +234,13 @@ def main():
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        start_button = st.button("▶️ Inizia", type="primary")
+        start_disabled = not fitness_tracker.model_loaded
+        start_button = st.button(
+            "▶️ Inizia", 
+            type="primary",
+            disabled=start_disabled,
+            help="YOLO11 deve essere caricato per iniziare" if start_disabled else "Avvia il tracking"
+        )
 
     with col2:
         stop_button = st.button("⏹️ Stop", type="secondary")
@@ -186,11 +249,11 @@ def main():
         reset_button = st.button("🔄 Reset Contatore")
 
     # Gestione pulsanti
-    if start_button:
+    if start_button and fitness_tracker.model_loaded:
         if not fitness_tracker.is_running:
             if fitness_tracker.initialize_webcam():
                 fitness_tracker.is_running = True
-                st.success("✅ Webcam inizializzata. Tracking avviato!")
+                st.success("✅ Webcam inizializzata. Tracking YOLO11 avviato!")
             else:
                 st.error("❌ Impossibile inizializzare la webcam")
 
@@ -229,7 +292,7 @@ def main():
         feedback_placeholder = st.empty()
 
     # Loop principale per il processing video
-    if fitness_tracker.is_running and fitness_tracker.webcam:
+    if fitness_tracker.is_running and fitness_tracker.webcam and fitness_tracker.model_loaded:
 
         try:
             # Leggi frame dalla webcam
@@ -248,8 +311,14 @@ def main():
                 # Aggiorna l'interfaccia
 
                 # Video feed
-                frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-                video_placeholder.image(frame_rgb, channels="RGB", use_column_width=True)
+                if processed_frame is not None:
+                    # Converti da BGR a RGB per Streamlit
+                    if len(processed_frame.shape) == 3 and processed_frame.shape[2] == 3:
+                        frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+                    else:
+                        frame_rgb = processed_frame
+
+                    video_placeholder.image(frame_rgb, channels="RGB", use_column_width=True)
 
                 # Conteggio ripetizioni
                 rep_count_placeholder.metric(
@@ -301,23 +370,33 @@ def main():
     elif fitness_tracker.is_running and not fitness_tracker.webcam:
         st.warning("⚠️ Webcam non disponibile. Clicca 'Inizia' per riavviare.")
 
+    elif fitness_tracker.is_running and not fitness_tracker.model_loaded:
+        st.error("❌ YOLO11 non caricato. Riavvia l'applicazione.")
+
     else:
         # Mostra istruzioni quando l'app non è in esecuzione
         with main_col1:
             st.info("""
-            ### 📋 Istruzioni per l'uso:
+            ### 📋 Istruzioni per l'uso (YOLO11):
 
-            1. **Seleziona l'esercizio** dalla barra laterale
-            2. **Clicca "Inizia"** per attivare la webcam
-            3. **Posizionati** davanti alla camera in modo che tutto il corpo sia visibile
-            4. **Inizia l'esercizio** - il sistema rileverà automaticamente i tuoi movimenti
-            5. **Mantieni la forma corretta** per far conteggiare le ripetizioni
-            6. **Ascolta il feedback audio** per migliorare la tecnica
+            1. **Attendi** che YOLO11 si carichi completamente
+            2. **Seleziona l'esercizio** dalla barra laterale
+            3. **Clicca "Inizia"** per attivare la webcam
+            4. **Posizionati** davanti alla camera in modo che tutto il corpo sia visibile
+            5. **Inizia l'esercizio** - YOLO11 rileverà automaticamente i tuoi movimenti
+            6. **Mantieni la forma corretta** per far conteggiare le ripetizioni
+            7. **Ascolta il feedback audio** per migliorare la tecnica
 
             ### 🎯 Esercizi supportati:
             - **Squat**: Scendi mantenendo la schiena dritta
             - **Push-up**: Mantieni il corpo dritto e scendi completamente
             - **Curl Bicipiti**: Tieni i gomiti vicini al corpo
+
+            ### 🚀 Vantaggi di YOLO11:
+            - **Più preciso** di MediaPipe
+            - **Compatibile** con Python 3.13
+            - **Più veloce** e ottimizzato
+            - **Migliore rilevamento** in condizioni difficili
             """)
 
         with main_col2:
@@ -329,12 +408,17 @@ def main():
             - ⚠️ Correzioni postura
             - 📊 Aggiornamenti progresso
 
+            ### 🤖 YOLO11 Status:
+            - **Modello**: Pose Estimation
+            - **Keypoints**: 17 punti COCO
+            - **Velocità**: Real-time
+
             **Assicurati che le cuffie siano collegate!**
             """)
 
     # Footer
     st.markdown("---")
-    st.markdown("💪 **Fitness Tracker AI** - Mantieni la forma, raggiungi i tuoi obiettivi!")
+    st.markdown("💪 **Fitness Tracker AI - YOLO11** - Tecnologia all'avanguardia per il tuo fitness!")
 
 if __name__ == "__main__":
     main()
