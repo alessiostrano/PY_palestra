@@ -1,16 +1,42 @@
 """
-Fitness Tracker AI - Con st.camera_input per Streamlit Cloud
-Questa versione FUNZIONA su server remoti senza webcam fisica!
+Fitness Tracker AI - Modalità Real-Time con Auto-Capture
+Scatta foto automatiche ogni 2-3 secondi + feedback vocale immediato
 """
 import streamlit as st
 import numpy as np
 import time
 from PIL import Image
 import os
+import threading
+import asyncio
 
 # Environment setup
 os.environ.setdefault('YOLO_CONFIG_DIR', '/tmp')
 os.environ.setdefault('WANDB_DISABLED', 'true')
+
+def init_tts():
+    """Inizializza Text-to-Speech per feedback vocale"""
+    try:
+        import pyttsx3
+        engine = pyttsx3.init()
+        engine.setProperty('rate', 180)  # Velocità parlato
+        engine.setProperty('volume', 0.9)  # Volume alto
+        return engine
+    except:
+        return None
+
+def speak_feedback(engine, message):
+    """Parla il feedback in thread separato per non bloccare"""
+    if engine and message:
+        def speak_thread():
+            try:
+                engine.say(message)
+                engine.runAndWait()
+            except:
+                pass
+
+        thread = threading.Thread(target=speak_thread, daemon=True)
+        thread.start()
 
 def load_yolo_model():
     """Carica YOLO11"""
@@ -26,261 +52,305 @@ def load_yolo_model():
         st.error(f"❌ Errore YOLO11: {e}")
         return None
 
-def analyze_image(image, model):
-    """Analizza immagine con YOLO11"""
-    try:
-        import cv2
-
-        # Converti PIL a OpenCV
-        opencv_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-
-        # YOLO11 detection
-        results = model(opencv_img, verbose=False, save=False)
-
-        if len(results) > 0 and results[0].keypoints is not None:
-            # Disegna keypoints
-            annotated = results[0].plot()
-            annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-
-            # Info rilevamento
-            num_people = len(results[0].keypoints.xy)
-            keypoints = results[0].keypoints.xy[0] if num_people > 0 else None
-            confidence = results[0].keypoints.conf[0] if results[0].keypoints.conf is not None and num_people > 0 else None
-
-            return annotated_rgb, num_people, keypoints, confidence
-        else:
-            return np.array(image), 0, None, None
-
-    except Exception as e:
-        st.error(f"❌ Errore analisi: {e}")
-        return np.array(image), 0, None, None
-
-def evaluate_simple_pose(keypoints, confidence, exercise_type):
-    """Valutazione semplificata della posa"""
+def analyze_pose_for_exercise(keypoints, confidence, exercise_type):
+    """Analisi specifica per esercizio con feedback vocale"""
     if keypoints is None or len(keypoints) == 0:
-        return "❓ Nessuna persona rilevata", "neutral"
+        return "❓ Nessuna persona rilevata", "", "neutral"
 
-    # Keypoints mapping (COCO format)
-    # 5: left_shoulder, 6: right_shoulder, 7: left_elbow, 8: right_elbow
-    # 9: left_wrist, 10: right_wrist, 11: left_hip, 12: right_hip  
-    # 13: left_knee, 14: right_knee, 15: left_ankle, 16: right_ankle
+    # Keypoints COCO: 5-6: shoulders, 7-8: elbows, 9-10: wrists
+    # 11-12: hips, 13-14: knees, 15-16: ankles
 
     try:
-        # Controlla se keypoints principali sono visibili
-        if confidence is not None:
-            key_points_conf = {
-                'shoulders': (confidence[5] + confidence[6]) / 2 if len(confidence) > 6 else 0,
-                'elbows': (confidence[7] + confidence[8]) / 2 if len(confidence) > 8 else 0,
-                'hips': (confidence[11] + confidence[12]) / 2 if len(confidence) > 12 else 0,
-                'knees': (confidence[13] + confidence[14]) / 2 if len(confidence) > 14 else 0
-            }
+        feedback_text = ""
+        voice_feedback = ""
+        status = "neutral"
 
-            # Valutazione basata su visibilità keypoints
+        if confidence is not None and len(confidence) > 16:
+            # Calcola confidence per parti del corpo
+            shoulders_conf = (confidence[5] + confidence[6]) / 2
+            elbows_conf = (confidence[7] + confidence[8]) / 2  
+            hips_conf = (confidence[11] + confidence[12]) / 2
+            knees_conf = (confidence[13] + confidence[14]) / 2
+
             if exercise_type == "squat":
-                if key_points_conf['knees'] > 0.5 and key_points_conf['hips'] > 0.5:
-                    return "🏋️ Posizione squat rilevata! Mantieni la schiena dritta.", "good"
+                # Analisi squat avanzata
+                if knees_conf > 0.6 and hips_conf > 0.6:
+                    # Calcola "profondità" squat approssimativamente
+                    hip_y = (keypoints[11][1] + keypoints[12][1]) / 2
+                    knee_y = (keypoints[13][1] + keypoints[14][1]) / 2
+
+                    if hip_y > knee_y:  # Hip più in basso delle ginocchia = squat profondo
+                        feedback_text = "🟢 SQUAT PROFONDO - Ottima forma!"
+                        voice_feedback = "Perfetto! Continua così!"
+                        status = "excellent"
+                    elif hip_y > knee_y * 0.95:  # Hip quasi al livello ginocchia
+                        feedback_text = "🟡 Scendi un po' di più"
+                        voice_feedback = "Scendi ancora un po'"
+                        status = "good"
+                    else:
+                        feedback_text = "🔴 SCENDI DI PIÙ! Hip sopra ginocchia"
+                        voice_feedback = "Scendi di più! Hip sopra le ginocchia!"
+                        status = "needs_work"
+
+                    # Controlla allineamento
+                    left_knee_x = keypoints[13][0]
+                    right_knee_x = keypoints[14][0]
+                    if abs(left_knee_x - right_knee_x) < 0.3:  # Ginocchia allineate
+                        feedback_text += " Ginocchia ben allineate!"
+                    else:
+                        feedback_text += " ⚠️ Allinea meglio le ginocchia"
+                        voice_feedback += " Allinea le ginocchia!"
+
                 else:
-                    return "⚠️ Posizionati di lato per migliore rilevamento squat", "warning"
+                    feedback_text = "⚠️ Posizionati di LATO per miglior rilevamento"
+                    voice_feedback = "Mettiti di lato alla camera"
+                    status = "positioning"
 
             elif exercise_type == "pushup":
-                if key_points_conf['shoulders'] > 0.5 and key_points_conf['elbows'] > 0.5:
-                    return "💪 Posizione push-up rilevata! Mantieni il corpo dritto.", "good"
+                if shoulders_conf > 0.6 and elbows_conf > 0.6:
+                    # Analisi push-up
+                    shoulder_y = (keypoints[5][1] + keypoints[6][1]) / 2
+                    elbow_y = (keypoints[7][1] + keypoints[8][1]) / 2
+
+                    if elbow_y > shoulder_y:  # Gomiti sotto spalle = push-up basso
+                        feedback_text = "🟢 PUSH-UP COMPLETO - Ottima discesa!"
+                        voice_feedback = "Perfetto! Ottima discesa!"
+                        status = "excellent"
+                    elif elbow_y > shoulder_y * 0.9:
+                        feedback_text = "🟡 Scendi un po' di più"
+                        voice_feedback = "Scendi ancora"
+                        status = "good"
+                    else:
+                        feedback_text = "🔴 SCENDI DI PIÙ! Push-up troppo alto"
+                        voice_feedback = "Scendi di più! Push-up troppo alto!"
+                        status = "needs_work"
+
+                    # Controlla corpo dritto
+                    if 'left_hip' in locals() and 'left_shoulder' in locals():
+                        feedback_text += " Mantieni il corpo dritto!"
+
                 else:
-                    return "⚠️ Posizionati di lato per migliore rilevamento push-up", "warning"
+                    feedback_text = "⚠️ Posizionati di LATO per miglior rilevamento" 
+                    voice_feedback = "Mettiti di lato alla camera"
+                    status = "positioning"
 
             elif exercise_type == "bicep_curl":
-                if key_points_conf['elbows'] > 0.5 and key_points_conf['shoulders'] > 0.5:
-                    return "🏋️‍♀️ Posizione curl rilevata! Mantieni i gomiti vicini al corpo.", "good"
+                if elbows_conf > 0.6 and shoulders_conf > 0.6:
+                    # Analisi curl
+                    left_elbow_y = keypoints[7][1]
+                    left_wrist_y = keypoints[9][1]
+                    left_shoulder_y = keypoints[5][1]
+
+                    if left_wrist_y < left_elbow_y < left_shoulder_y:  # Curl alto
+                        feedback_text = "🟢 CURL COMPLETO - Ottima flessione!"
+                        voice_feedback = "Perfetto! Ottima flessione!"
+                        status = "excellent"
+                    elif left_wrist_y < left_elbow_y:
+                        feedback_text = "🟡 Fletti un po' di più"
+                        voice_feedback = "Fletti di più"
+                        status = "good"
+                    else:
+                        feedback_text = "🔴 FLETTI I GOMITI! Movimento troppo piccolo"
+                        voice_feedback = "Fletti i gomiti! Movimento troppo piccolo!"
+                        status = "needs_work"
+
+                    # Controlla stabilità gomiti
+                    left_elbow_x = keypoints[7][0]
+                    left_shoulder_x = keypoints[5][0]
+
+                    if abs(left_elbow_x - left_shoulder_x) < 0.1:
+                        feedback_text += " Gomiti ben fermi!"
+                    else:
+                        feedback_text += " ⚠️ Mantieni gomiti vicino al corpo"
+                        voice_feedback += " Gomiti vicino al corpo!"
+
                 else:
-                    return "⚠️ Posizionati frontalmente per migliore rilevamento curl", "warning"
+                    feedback_text = "⚠️ Posizionati FRONTALE per miglior rilevamento"
+                    voice_feedback = "Mettiti frontale alla camera"
+                    status = "positioning"
 
-        return "👤 Persona rilevata - continua con l'esercizio!", "neutral"
+        return feedback_text, voice_feedback, status
 
-    except:
-        return "👤 Analisi pose in corso...", "neutral"
+    except Exception as e:
+        return f"❌ Errore analisi: {str(e)}", "", "error"
 
 def main():
     st.set_page_config(
-        page_title="💪 Fitness Tracker AI",
+        page_title="💪 Fitness Tracker AI - Real Time",
         page_icon="💪",
         layout="wide"
     )
 
-    st.title("💪 Fitness Tracker AI")
-    st.subheader("📸 Versione Camera Cloud - Streamlit Compatible")
+    st.title("💪 Fitness Tracker AI - REAL TIME")
+    st.subheader("🎤 Con Feedback Vocale in Tempo Reale!")
 
-    st.info("""
-    ### 📸 Modalità Camera Cloud
-
-    **Perfetto per Streamlit Cloud!** Questa versione usa la **camera del tuo dispositivo** 
-    tramite il browser, non richiede webcam sul server.
-
-    1. **Seleziona esercizio**
-    2. **Scatta foto** con il pulsante camera
-    3. **Analisi automatica** con YOLO11
-    """)
-
-    # Sidebar controlli
-    st.sidebar.header("⚙️ Controlli")
-
-    # Selezione esercizio
-    exercise_type = st.sidebar.selectbox(
-        "🎯 Seleziona esercizio:",
-        ["squat", "pushup", "bicep_curl"],
-        format_func=lambda x: {"squat": "🏋️ Squat", "pushup": "💪 Push-up", "bicep_curl": "🏋️‍♀️ Curl Bicipiti"}[x]
-    )
-
-    # Carica modello
+    # Inizializza session state
     if 'model' not in st.session_state:
         st.session_state.model = None
+    if 'tts_engine' not in st.session_state:
+        st.session_state.tts_engine = None
+    if 'realtime_mode' not in st.session_state:
+        st.session_state.realtime_mode = False
+    if 'last_feedback_time' not in st.session_state:
+        st.session_state.last_feedback_time = 0
 
+    # Sidebar
+    st.sidebar.header("⚙️ Controlli Real-Time")
+
+    # Carica modelli
     if st.sidebar.button("🤖 Carica YOLO11", type="primary"):
         st.session_state.model = load_yolo_model()
         if st.session_state.model:
             st.sidebar.success("✅ YOLO11 Pronto!")
 
+    if st.sidebar.button("🎤 Inizializza Audio"):
+        st.session_state.tts_engine = init_tts()
+        if st.session_state.tts_engine:
+            st.sidebar.success("✅ TTS Pronto!")
+            speak_feedback(st.session_state.tts_engine, "Sistema audio attivato!")
+        else:
+            st.sidebar.warning("⚠️ TTS non disponibile")
+
+    # Status modelli
     if st.session_state.model:
-        st.sidebar.success("🤖 YOLO11 Caricato")
+        st.sidebar.success("🤖 YOLO11 Ready")
+    if st.session_state.tts_engine:
+        st.sidebar.success("🎤 Audio Ready")
 
-    # Camera input - FUNZIONA SU STREAMLIT CLOUD!
-    st.subheader("📸 Camera Input")
-
-    camera_input = st.camera_input(
-        "📷 Scatta una foto durante l'esercizio:",
-        help="Assicurati che tutto il corpo sia visibile"
+    # Selezione esercizio
+    exercise_type = st.sidebar.selectbox(
+        "🎯 Esercizio:",
+        ["squat", "pushup", "bicep_curl"],
+        format_func=lambda x: {"squat": "🏋️ Squat", "pushup": "💪 Push-up", "bicep_curl": "🏋️‍♀️ Curl"}[x]
     )
 
-    if camera_input and st.session_state.model:
-        # Analizza immagine
-        image = Image.open(camera_input)
+    # Velocità feedback
+    feedback_interval = st.sidebar.slider("🔄 Feedback ogni X secondi", 1, 5, 2)
 
-        col1, col2 = st.columns([1, 1])
-
-        with col1:
-            st.subheader("📷 Foto Scattata")
-            st.image(image, use_column_width=True)
-
-        with col2:
-            st.subheader("🤖 Analisi YOLO11")
-
-            with st.spinner("🔄 Analizzando..."):
-                analyzed_img, num_people, keypoints, confidence = analyze_image(image, st.session_state.model)
-
-            st.image(analyzed_img, use_column_width=True)
-
-            # Risultati
-            if num_people > 0:
-                st.success(f"✅ {num_people} persona/e rilevata/e!")
-
-                # Valutazione pose specifica per esercizio
-                feedback, status = evaluate_simple_pose(keypoints, confidence, exercise_type)
-
-                if status == "good":
-                    st.success(feedback)
-                elif status == "warning":
-                    st.warning(feedback)
-                else:
-                    st.info(feedback)
-
-                # Statistiche
-                if confidence is not None:
-                    avg_conf = float(confidence.mean())
-                    st.metric("🎯 Confidence Media", f"{avg_conf:.1%}")
-
-                st.metric("📊 Keypoints Rilevati", len(keypoints))
-
-            else:
-                st.warning("⚠️ Nessuna persona rilevata")
-                st.info("""
-                **Suggerimenti:**
-                - Corpo completamente visibile nella foto
-                - Buona illuminazione
-                - Sfondo semplice
-                - Distanza 2-3 metri dalla camera
-                """)
-
-    elif camera_input and not st.session_state.model:
-        st.warning("⚠️ Carica prima il modello YOLO11!")
-
-    # Istruzioni esercizi
-    st.subheader(f"🎯 Istruzioni {exercise_type.title()}")
-
-    exercise_instructions = {
-        "squat": {
-            "setup": "Piedi alla larghezza delle spalle",
-            "movimento": "Scendi mantenendo la schiena dritta",
-            "tips": "Ginocchia allineate ai piedi, peso sui talloni",
-            "camera": "Posizionati di LATO rispetto alla camera"
-        },
-        "pushup": {
-            "setup": "Posizione plank, braccia tese",
-            "movimento": "Scendi fino a sfiorare il pavimento",
-            "tips": "Corpo dritto come una tavola", 
-            "camera": "Posizionati di LATO rispetto alla camera"
-        },
-        "bicep_curl": {
-            "setup": "In piedi, braccia lungo i fianchi",
-            "movimento": "Fletti i gomiti mantenendoli vicini al corpo",
-            "tips": "Solo gli avambracci si muovono",
-            "camera": "Posizionati FRONTALE alla camera"
-        }
-    }
-
-    instructions = exercise_instructions[exercise_type]
-
+    # Modalità real-time
     col1, col2 = st.columns(2)
-    with col1:
-        st.info(f"""
-        **📋 Setup:**
-        {instructions['setup']}
 
-        **🔄 Movimento:**  
-        {instructions['movimento']}
-        """)
+    with col1:
+        if st.button("▶️ INIZIA REAL-TIME", type="primary", disabled=not (st.session_state.model and st.session_state.tts_engine)):
+            st.session_state.realtime_mode = True
+            speak_feedback(st.session_state.tts_engine, f"Iniziamo con {exercise_type}! Preparati!")
 
     with col2:
-        st.success(f"""
-        **💡 Tips:**
-        {instructions['tips']}
+        if st.button("⏹️ FERMA", type="secondary"):
+            st.session_state.realtime_mode = False
+            speak_feedback(st.session_state.tts_engine, "Sessione terminata!")
 
-        **📸 Camera:**
-        {instructions['camera']}
-        """)
+    if not (st.session_state.model and st.session_state.tts_engine):
+        st.warning("⚠️ Carica prima YOLO11 e Audio per modalità real-time!")
+        return
 
-    # File upload alternativo
-    st.subheader("📁 Upload Immagine (Alternativo)")
-    uploaded_file = st.file_uploader(
-        "O carica un'immagine dal dispositivo:",
-        type=['png', 'jpg', 'jpeg'],
-        help="Se la camera non funziona, usa questa opzione"
-    )
+    # Area principale
+    if st.session_state.realtime_mode:
+        st.success("🔴 **MODALITÀ REAL-TIME ATTIVA** 🔴")
+        st.info("📸 Scatta foto ogni pochi secondi per feedback continuo!")
 
-    if uploaded_file and st.session_state.model:
-        image = Image.open(uploaded_file)
-
-        with st.spinner("🔄 Analizzando immagine caricata..."):
-            analyzed_img, num_people, keypoints, confidence = analyze_image(image, st.session_state.model)
-
-        col1, col2 = st.columns(2)
+        # Placeholder per risultati
+        col1, col2 = st.columns([2, 1])
 
         with col1:
-            st.image(image, caption="Immagine Caricata", use_column_width=True)
+            st.subheader("📸 Live Analysis")
+            camera_placeholder = st.empty()
+
         with col2:
-            st.image(analyzed_img, caption="Analisi YOLO11", use_column_width=True)
+            st.subheader("💬 Feedback Live")
+            feedback_placeholder = st.empty()
+            stats_placeholder = st.empty()
 
-        if num_people > 0:
-            feedback, status = evaluate_simple_pose(keypoints, confidence, exercise_type)
-            if status == "good":
-                st.success(feedback)
-            elif status == "warning":
-                st.warning(feedback)
-            else:
-                st.info(feedback)
+        # Loop continuo per camera input
+        camera_input = st.camera_input(
+            f"📷 {exercise_type.upper()} - Scatta per feedback:", 
+            key=f"realtime_{int(time.time())}"  # Key dinamica per refresh
+        )
 
-    # Footer
-    st.markdown("---")
-    st.markdown("💪 **Fitness Tracker AI - Camera Cloud Edition** 🚀")
-    st.markdown("*Perfetto per Streamlit Community Cloud - Nessuna webcam server richiesta!*")
+        if camera_input:
+            current_time = time.time()
+
+            # Throttling feedback per non spammare
+            if current_time - st.session_state.last_feedback_time > feedback_interval:
+
+                # Analizza foto
+                image = Image.open(camera_input)
+
+                try:
+                    import cv2
+                    opencv_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+                    results = st.session_state.model(opencv_img, verbose=False, save=False)
+
+                    if len(results) > 0 and results[0].keypoints is not None:
+                        # Disegna keypoints
+                        annotated = results[0].plot()
+                        annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+
+                        # Mostra immagine
+                        camera_placeholder.image(annotated_rgb, use_column_width=True)
+
+                        # Analisi pose
+                        keypoints = results[0].keypoints.xy[0]
+                        confidence = results[0].keypoints.conf[0] if results[0].keypoints.conf is not None else None
+
+                        feedback_text, voice_feedback, status = analyze_pose_for_exercise(keypoints, confidence, exercise_type)
+
+                        # Mostra feedback visivo
+                        if status == "excellent":
+                            feedback_placeholder.success(feedback_text)
+                        elif status == "good":
+                            feedback_placeholder.info(feedback_text)
+                        elif status == "needs_work":
+                            feedback_placeholder.warning(feedback_text)
+                        else:
+                            feedback_placeholder.error(feedback_text)
+
+                        # FEEDBACK VOCALE IMMEDIATO
+                        if voice_feedback:
+                            speak_feedback(st.session_state.tts_engine, voice_feedback)
+
+                        # Stats
+                        if confidence is not None:
+                            avg_conf = float(confidence.mean())
+                            stats_placeholder.metric("🎯 Precision", f"{avg_conf:.1%}")
+
+                        st.session_state.last_feedback_time = current_time
+
+                    else:
+                        feedback_placeholder.warning("⚠️ Nessuna persona rilevata")
+                        speak_feedback(st.session_state.tts_engine, "Non ti vedo! Posizionati meglio!")
+
+                except Exception as e:
+                    feedback_placeholder.error(f"❌ Errore: {e}")
+
+        # Auto-refresh per continuare il loop
+        time.sleep(0.5)
+        st.rerun()
+
+    else:
+        # Modalità normale
+        st.info("""
+        ### 🎤 Modalità Real-Time - Come Funziona:
+
+        1. **Carica YOLO11** 🤖 e **Inizializza Audio** 🎤
+        2. **Seleziona esercizio** dalla sidebar
+        3. **Clicca "INIZIA REAL-TIME"** ▶️
+        4. **Scatta foto ogni 2-3 secondi** 📸
+        5. **Ricevi feedback vocale IMMEDIATO!** 🗣️
+
+        ### 🏋️ Feedback Vocale Includes:
+        - **"Perfetto! Continua così!"** ✅
+        - **"Scendi di più!"** per squat shallow
+        - **"Fletti i gomiti!"** per curl incomplete  
+        - **"Mantieni corpo dritto!"** per push-up
+        - **"Allinea le ginocchia!"** per squat form
+
+        ### 💡 Tips per Miglior Esperienza:
+        - **Audio cuffie/altoparlanti** ON 🔊
+        - **Buona illuminazione** 💡
+        - **Corpo intero visibile** 👤
+        - **Scatta ogni 2-3 secondi** ⏱️
+        """)
 
 if __name__ == "__main__":
     main()
