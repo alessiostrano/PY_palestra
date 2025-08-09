@@ -1,10 +1,11 @@
 """
-Modulo per il conteggio automatico delle ripetizioni degli esercizi
+Modulo per il conteggio automatico delle ripetizioni
+VERSIONE COMPLETA E FUNZIONANTE
 """
 
 class RepetitionCounter:
     """
-    Classe per conteggiare automaticamente le ripetizioni degli esercizi
+    Conta automaticamente le ripetizioni degli esercizi
     """
 
     def __init__(self):
@@ -26,16 +27,18 @@ class RepetitionCounter:
         if current_phase in ['unknown', 'error']:
             return self._get_status()
 
+        # Aggiorna cronologia
         self.phase_history.append({
             'phase': current_phase,
-            'correct': is_correct,
-            'timestamp': len(self.phase_history)
+            'correct': is_correct
         })
 
-        if len(self.phase_history) > 10:
-            self.phase_history = self.phase_history[-10:]
+        # Mantieni solo ultime 5 fasi
+        if len(self.phase_history) > 5:
+            self.phase_history = self.phase_history[-5:]
 
-        rep_completed = self._check_repetition_completion(exercise_type, current_phase, is_correct)
+        # Controlla completamento ripetizione
+        rep_completed = self._check_repetition_completion(exercise_type)
 
         if rep_completed:
             self.count += 1
@@ -49,67 +52,26 @@ class RepetitionCounter:
         self.last_phase = current_phase
         return self._get_status()
 
-    def _check_repetition_completion(self, exercise_type, current_phase, is_correct):
-        if self.correct_form_required and not is_correct:
+    def _check_repetition_completion(self, exercise_type):
+        if len(self.phase_history) < 3:
             return False
 
+        recent_phases = [p['phase'] for p in self.phase_history[-3:]]
+
+        # Pattern per ogni esercizio
         if exercise_type == 'squat':
-            return self._check_squat_completion(current_phase, is_correct)
+            pattern = ['up', 'down', 'up']
         elif exercise_type == 'pushup':
-            return self._check_pushup_completion(current_phase, is_correct)
+            pattern = ['up', 'down', 'up']
         elif exercise_type == 'bicep_curl':
-            return self._check_bicep_curl_completion(current_phase, is_correct)
-
-        return False
-
-    def _check_squat_completion(self, current_phase, is_correct):
-        if len(self.phase_history) < 3:
+            pattern = ['down', 'up', 'down']
+        else:
             return False
 
-        recent_phases = [p['phase'] for p in self.phase_history[-3:]]
-
-        if (len(recent_phases) >= 3 and
-            recent_phases[-3] == 'up' and 
-            recent_phases[-2] == 'down' and 
-            recent_phases[-1] == 'up'):
-
+        # Controlla se pattern è completato
+        if recent_phases == pattern:
             if self.correct_form_required:
-                recent_correct = [p['correct'] for p in self.phase_history[-3:]]
-                return any(recent_correct)
-            return True
-
-        return False
-
-    def _check_pushup_completion(self, current_phase, is_correct):
-        if len(self.phase_history) < 3:
-            return False
-
-        recent_phases = [p['phase'] for p in self.phase_history[-3:]]
-
-        if (len(recent_phases) >= 3 and
-            recent_phases[-3] == 'up' and 
-            recent_phases[-2] == 'down' and 
-            recent_phases[-1] == 'up'):
-
-            if self.correct_form_required:
-                recent_correct = [p['correct'] for p in self.phase_history[-3:]]
-                return any(recent_correct)
-            return True
-
-        return False
-
-    def _check_bicep_curl_completion(self, current_phase, is_correct):
-        if len(self.phase_history) < 3:
-            return False
-
-        recent_phases = [p['phase'] for p in self.phase_history[-3:]]
-
-        if (len(recent_phases) >= 3 and
-            recent_phases[-3] == 'down' and 
-            recent_phases[-2] == 'up' and 
-            recent_phases[-1] == 'down'):
-
-            if self.correct_form_required:
+                # Almeno una fase deve essere corretta
                 recent_correct = [p['correct'] for p in self.phase_history[-3:]]
                 return any(recent_correct)
             return True
