@@ -1,210 +1,103 @@
 """
-Fitness Tracker AI - Versione Ultra Compatibile Python 3.13
+Fitness Tracker AI - Con st.camera_input per Streamlit Cloud
+Questa versione FUNZIONA su server remoti senza webcam fisica!
 """
 import streamlit as st
-import os
-import sys
+import numpy as np
 import time
+from PIL import Image
+import os
 
 # Environment setup
 os.environ.setdefault('YOLO_CONFIG_DIR', '/tmp')
 os.environ.setdefault('WANDB_DISABLED', 'true')
 
-def check_dependencies():
-    """Controlla e mostra status delle dipendenze"""
-    deps = {}
-
-    # OpenCV
-    try:
-        import cv2
-        deps['opencv'] = f"✅ OpenCV {cv2.__version__}"
-        opencv_ok = True
-    except Exception as e:
-        deps['opencv'] = f"❌ OpenCV: {str(e)[:50]}"
-        opencv_ok = False
-
-    # NumPy
-    try:
-        import numpy as np
-        deps['numpy'] = f"✅ NumPy {np.__version__}"
-        numpy_ok = True
-    except Exception as e:
-        deps['numpy'] = f"❌ NumPy: {str(e)[:50]}"
-        numpy_ok = False
-
-    # Ultralytics
-    try:
-        from ultralytics import YOLO
-        deps['ultralytics'] = "✅ Ultralytics OK"
-        yolo_ok = True
-    except Exception as e:
-        deps['ultralytics'] = f"❌ Ultralytics: {str(e)[:50]}"
-        yolo_ok = False
-
-    # PIL
-    try:
-        from PIL import Image
-        deps['pillow'] = "✅ Pillow OK"
-        pil_ok = True
-    except Exception as e:
-        deps['pillow'] = f"❌ Pillow: {str(e)[:50]}"
-        pil_ok = False
-
-    all_ok = opencv_ok and numpy_ok and yolo_ok and pil_ok
-    return deps, all_ok
-
 def load_yolo_model():
-    """Carica il modello YOLO11 con gestione errori"""
+    """Carica YOLO11"""
     try:
         from ultralytics import YOLO
         with st.spinner("🤖 Caricamento YOLO11..."):
             model = YOLO('yolo11n-pose.pt')
-            # Test rapido
-            import numpy as np
-            test_img = np.zeros((640, 480, 3), dtype=np.uint8)
+            # Test veloce
+            test_img = np.zeros((480, 640, 3), dtype=np.uint8)
             _ = model(test_img, verbose=False, save=False)
-        return model, True
+        return model
     except Exception as e:
-        st.error(f"❌ Errore YOLO11: {str(e)}")
-        return None, False
+        st.error(f"❌ Errore YOLO11: {e}")
+        return None
 
-def demo_mode():
-    """Modalità demo con upload immagini"""
-    st.subheader("📸 Demo Mode - Upload Immagini")
+def analyze_image(image, model):
+    """Analizza immagine con YOLO11"""
+    try:
+        import cv2
 
-    uploaded_file = st.file_uploader(
-        "Carica una foto del tuo esercizio:",
-        type=['png', 'jpg', 'jpeg'],
-        help="Assicurati che il corpo sia completamente visibile"
-    )
+        # Converti PIL a OpenCV
+        opencv_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
-    if uploaded_file:
-        from PIL import Image
-        image = Image.open(uploaded_file)
+        # YOLO11 detection
+        results = model(opencv_img, verbose=False, save=False)
 
-        col1, col2 = st.columns(2)
+        if len(results) > 0 and results[0].keypoints is not None:
+            # Disegna keypoints
+            annotated = results[0].plot()
+            annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
 
-        with col1:
-            st.subheader("📷 Immagine Originale")
-            st.image(image, use_column_width=True)
+            # Info rilevamento
+            num_people = len(results[0].keypoints.xy)
+            keypoints = results[0].keypoints.xy[0] if num_people > 0 else None
+            confidence = results[0].keypoints.conf[0] if results[0].keypoints.conf is not None and num_people > 0 else None
 
-        with col2:
-            st.subheader("🤖 Analisi")
+            return annotated_rgb, num_people, keypoints, confidence
+        else:
+            return np.array(image), 0, None, None
 
-            if 'model' in st.session_state and st.session_state.model:
-                try:
-                    import cv2
-                    import numpy as np
+    except Exception as e:
+        st.error(f"❌ Errore analisi: {e}")
+        return np.array(image), 0, None, None
 
-                    # Converti PIL a OpenCV
-                    opencv_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+def evaluate_simple_pose(keypoints, confidence, exercise_type):
+    """Valutazione semplificata della posa"""
+    if keypoints is None or len(keypoints) == 0:
+        return "❓ Nessuna persona rilevata", "neutral"
 
-                    # Analisi YOLO11
-                    with st.spinner("🔄 Analisi in corso..."):
-                        results = st.session_state.model(opencv_img, verbose=False, save=False)
+    # Keypoints mapping (COCO format)
+    # 5: left_shoulder, 6: right_shoulder, 7: left_elbow, 8: right_elbow
+    # 9: left_wrist, 10: right_wrist, 11: left_hip, 12: right_hip  
+    # 13: left_knee, 14: right_knee, 15: left_ankle, 16: right_ankle
 
-                    if len(results) > 0 and results[0].keypoints is not None:
-                        # Disegna risultati
-                        annotated = results[0].plot()
-                        annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-                        st.image(annotated_rgb, use_column_width=True)
+    try:
+        # Controlla se keypoints principali sono visibili
+        if confidence is not None:
+            key_points_conf = {
+                'shoulders': (confidence[5] + confidence[6]) / 2 if len(confidence) > 6 else 0,
+                'elbows': (confidence[7] + confidence[8]) / 2 if len(confidence) > 8 else 0,
+                'hips': (confidence[11] + confidence[12]) / 2 if len(confidence) > 12 else 0,
+                'knees': (confidence[13] + confidence[14]) / 2 if len(confidence) > 14 else 0
+            }
 
-                        # Info rilevamento
-                        num_people = len(results[0].keypoints.xy)
-                        st.success(f"✅ Rilevate {num_people} persona/e!")
+            # Valutazione basata su visibilità keypoints
+            if exercise_type == "squat":
+                if key_points_conf['knees'] > 0.5 and key_points_conf['hips'] > 0.5:
+                    return "🏋️ Posizione squat rilevata! Mantieni la schiena dritta.", "good"
+                else:
+                    return "⚠️ Posizionati di lato per migliore rilevamento squat", "warning"
 
-                        if num_people > 0:
-                            keypoints = results[0].keypoints.xy[0]
-                            confidence = results[0].keypoints.conf[0] if results[0].keypoints.conf is not None else None
+            elif exercise_type == "pushup":
+                if key_points_conf['shoulders'] > 0.5 and key_points_conf['elbows'] > 0.5:
+                    return "💪 Posizione push-up rilevata! Mantieni il corpo dritto.", "good"
+                else:
+                    return "⚠️ Posizionati di lato per migliore rilevamento push-up", "warning"
 
-                            st.info(f"📊 Keypoints rilevati: {len(keypoints)}")
-                            if confidence is not None:
-                                avg_conf = float(confidence.mean())
-                                st.metric("🎯 Confidence Media", f"{avg_conf:.1%}")
+            elif exercise_type == "bicep_curl":
+                if key_points_conf['elbows'] > 0.5 and key_points_conf['shoulders'] > 0.5:
+                    return "🏋️‍♀️ Posizione curl rilevata! Mantieni i gomiti vicini al corpo.", "good"
+                else:
+                    return "⚠️ Posizionati frontalmente per migliore rilevamento curl", "warning"
 
-                    else:
-                        st.warning("⚠️ Nessuna persona rilevata nell'immagine")
-                        st.info("Suggerimenti:\n- Corpo completamente visibile\n- Buona illuminazione\n- Posizione frontale o laterale")
+        return "👤 Persona rilevata - continua con l'esercizio!", "neutral"
 
-                except Exception as e:
-                    st.error(f"❌ Errore nell'analisi: {str(e)}")
-            else:
-                st.warning("⚠️ Modello YOLO11 non caricato")
-
-def webcam_mode():
-    """Modalità webcam in tempo reale"""
-    st.subheader("📹 Webcam Mode - Tempo Reale")
-
-    if 'webcam_running' not in st.session_state:
-        st.session_state.webcam_running = False
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if st.button("▶️ Avvia Webcam", type="primary"):
-            st.session_state.webcam_running = True
-            st.rerun()
-
-    with col2:
-        if st.button("⏹️ Ferma Webcam"):
-            st.session_state.webcam_running = False
-            st.rerun()
-
-    if st.session_state.webcam_running:
-        try:
-            import cv2
-
-            # Inizializza webcam
-            if 'webcam' not in st.session_state or st.session_state.webcam is None:
-                for i in range(4):
-                    cap = cv2.VideoCapture(i)
-                    if cap.isOpened():
-                        ret, frame = cap.read()
-                        if ret:
-                            st.session_state.webcam = cap
-                            break
-                        cap.release()
-
-                if 'webcam' not in st.session_state or st.session_state.webcam is None:
-                    st.error("❌ Nessuna webcam disponibile")
-                    return
-
-            # Leggi frame
-            ret, frame = st.session_state.webcam.read()
-
-            if ret:
-                # Processa con YOLO11 se disponibile
-                if 'model' in st.session_state and st.session_state.model:
-                    try:
-                        results = st.session_state.model(frame, verbose=False, save=False)
-                        if len(results) > 0 and results[0].keypoints is not None:
-                            frame = results[0].plot()
-                    except:
-                        pass  # Usa frame originale se errore
-
-                # Mostra frame
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                st.image(frame_rgb, channels="RGB", use_column_width=True)
-
-                # Auto-refresh
-                time.sleep(0.1)
-                st.rerun()
-            else:
-                st.error("❌ Errore lettura webcam")
-
-        except Exception as e:
-            st.error(f"❌ Errore webcam: {str(e)}")
-    else:
-        st.info("""
-        ### 📋 Modalità Webcam:
-
-        1. **Clicca "Avvia Webcam"**
-        2. **Consenti accesso** camera nel browser
-        3. **Posizionati** davanti alla camera
-        4. **Il sistema rileverà** automaticamente la tua pose
-
-        **Nota**: Richiede webcam funzionante e permessi browser
-        """)
+    except:
+        return "👤 Analisi pose in corso...", "neutral"
 
 def main():
     st.set_page_config(
@@ -214,95 +107,180 @@ def main():
     )
 
     st.title("💪 Fitness Tracker AI")
-    st.subheader("🚀 Versione Ultra-Compatibile Python 3.13")
+    st.subheader("📸 Versione Camera Cloud - Streamlit Compatible")
 
-    # Info sistema
-    st.sidebar.header("ℹ️ Sistema")
-    st.sidebar.info(f"🐍 Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
+    st.info("""
+    ### 📸 Modalità Camera Cloud
 
-    # Controlla dipendenze
-    with st.spinner("🔍 Controllo dipendenze..."):
-        deps, all_ok = check_dependencies()
+    **Perfetto per Streamlit Cloud!** Questa versione usa la **camera del tuo dispositivo** 
+    tramite il browser, non richiede webcam sul server.
 
-    st.sidebar.subheader("📦 Dipendenze")
-    for name, status in deps.items():
-        if "✅" in status:
-            st.sidebar.success(status)
-        else:
-            st.sidebar.error(status)
+    1. **Seleziona esercizio**
+    2. **Scatta foto** con il pulsante camera
+    3. **Analisi automatica** con YOLO11
+    """)
 
-    if not all_ok:
-        st.error("""
-        ❌ **Alcune dipendenze mancano!**
+    # Sidebar controlli
+    st.sidebar.header("⚙️ Controlli")
 
-        **Per risolvere:**
-        1. Controlla che tutti i packages siano installati
-        2. Prova a fare refresh della pagina
-        3. Riavvia l'applicazione se necessario
-        """)
-        return
-
-    # Carica modello YOLO11
-    if 'model_loaded' not in st.session_state:
-        st.session_state.model_loaded = False
-
-    if not st.session_state.model_loaded:
-        if st.button("🤖 Carica Modello YOLO11", type="primary"):
-            model, success = load_yolo_model()
-            if success:
-                st.session_state.model = model
-                st.session_state.model_loaded = True
-                st.success("✅ YOLO11 caricato con successo!")
-                st.rerun()
-    else:
-        st.sidebar.success("🤖 YOLO11 Pronto")
-
-    # Modalità operative
-    st.subheader("🎯 Modalità Operative")
-
-    mode = st.radio(
-        "Scegli modalità:",
-        ["📸 Demo (Upload Immagini)", "📹 Webcam (Tempo Reale)"],
-        horizontal=True
+    # Selezione esercizio
+    exercise_type = st.sidebar.selectbox(
+        "🎯 Seleziona esercizio:",
+        ["squat", "pushup", "bicep_curl"],
+        format_func=lambda x: {"squat": "🏋️ Squat", "pushup": "💪 Push-up", "bicep_curl": "🏋️‍♀️ Curl Bicipiti"}[x]
     )
 
-    if mode == "📸 Demo (Upload Immagini)":
-        demo_mode()
-    elif mode == "📹 Webcam (Tempo Reale)":
-        webcam_mode()
+    # Carica modello
+    if 'model' not in st.session_state:
+        st.session_state.model = None
 
-    # Istruzioni
-    with st.expander("📖 Istruzioni"):
-        st.markdown("""
-        ### 🎯 Come usare:
+    if st.sidebar.button("🤖 Carica YOLO11", type="primary"):
+        st.session_state.model = load_yolo_model()
+        if st.session_state.model:
+            st.sidebar.success("✅ YOLO11 Pronto!")
 
-        **Modalità Demo:**
-        1. Scatta una foto mentre fai un esercizio
-        2. Carica la foto usando il pulsante upload
-        3. Visualizza l'analisi YOLO11 con keypoints
+    if st.session_state.model:
+        st.sidebar.success("🤖 YOLO11 Caricato")
 
-        **Modalità Webcam:**  
-        1. Clicca "Avvia Webcam"
-        2. Consenti accesso alla camera
-        3. Posizionati davanti alla webcam
-        4. Muoviti per vedere il tracking in tempo reale
+    # Camera input - FUNZIONA SU STREAMLIT CLOUD!
+    st.subheader("📸 Camera Input")
 
-        ### 🏋️ Esercizi supportati:
-        - **Squat**: Posizione laterale per migliore rilevamento
-        - **Push-up**: Posizione laterale, corpo dritto
-        - **Pose generiche**: Qualsiasi movimento corporeo
+    camera_input = st.camera_input(
+        "📷 Scatta una foto durante l'esercizio:",
+        help="Assicurati che tutto il corpo sia visibile"
+    )
 
-        ### 💡 Tips:
-        - **Illuminazione**: Buona luce naturale
-        - **Sfondo**: Semplice e uniforme
-        - **Posizione**: Corpo completamente visibile
-        - **Distanza**: 2-3 metri dalla camera
+    if camera_input and st.session_state.model:
+        # Analizza immagine
+        image = Image.open(camera_input)
+
+        col1, col2 = st.columns([1, 1])
+
+        with col1:
+            st.subheader("📷 Foto Scattata")
+            st.image(image, use_column_width=True)
+
+        with col2:
+            st.subheader("🤖 Analisi YOLO11")
+
+            with st.spinner("🔄 Analizzando..."):
+                analyzed_img, num_people, keypoints, confidence = analyze_image(image, st.session_state.model)
+
+            st.image(analyzed_img, use_column_width=True)
+
+            # Risultati
+            if num_people > 0:
+                st.success(f"✅ {num_people} persona/e rilevata/e!")
+
+                # Valutazione pose specifica per esercizio
+                feedback, status = evaluate_simple_pose(keypoints, confidence, exercise_type)
+
+                if status == "good":
+                    st.success(feedback)
+                elif status == "warning":
+                    st.warning(feedback)
+                else:
+                    st.info(feedback)
+
+                # Statistiche
+                if confidence is not None:
+                    avg_conf = float(confidence.mean())
+                    st.metric("🎯 Confidence Media", f"{avg_conf:.1%}")
+
+                st.metric("📊 Keypoints Rilevati", len(keypoints))
+
+            else:
+                st.warning("⚠️ Nessuna persona rilevata")
+                st.info("""
+                **Suggerimenti:**
+                - Corpo completamente visibile nella foto
+                - Buona illuminazione
+                - Sfondo semplice
+                - Distanza 2-3 metri dalla camera
+                """)
+
+    elif camera_input and not st.session_state.model:
+        st.warning("⚠️ Carica prima il modello YOLO11!")
+
+    # Istruzioni esercizi
+    st.subheader(f"🎯 Istruzioni {exercise_type.title()}")
+
+    exercise_instructions = {
+        "squat": {
+            "setup": "Piedi alla larghezza delle spalle",
+            "movimento": "Scendi mantenendo la schiena dritta",
+            "tips": "Ginocchia allineate ai piedi, peso sui talloni",
+            "camera": "Posizionati di LATO rispetto alla camera"
+        },
+        "pushup": {
+            "setup": "Posizione plank, braccia tese",
+            "movimento": "Scendi fino a sfiorare il pavimento",
+            "tips": "Corpo dritto come una tavola", 
+            "camera": "Posizionati di LATO rispetto alla camera"
+        },
+        "bicep_curl": {
+            "setup": "In piedi, braccia lungo i fianchi",
+            "movimento": "Fletti i gomiti mantenendoli vicini al corpo",
+            "tips": "Solo gli avambracci si muovono",
+            "camera": "Posizionati FRONTALE alla camera"
+        }
+    }
+
+    instructions = exercise_instructions[exercise_type]
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info(f"""
+        **📋 Setup:**
+        {instructions['setup']}
+
+        **🔄 Movimento:**  
+        {instructions['movimento']}
         """)
+
+    with col2:
+        st.success(f"""
+        **💡 Tips:**
+        {instructions['tips']}
+
+        **📸 Camera:**
+        {instructions['camera']}
+        """)
+
+    # File upload alternativo
+    st.subheader("📁 Upload Immagine (Alternativo)")
+    uploaded_file = st.file_uploader(
+        "O carica un'immagine dal dispositivo:",
+        type=['png', 'jpg', 'jpeg'],
+        help="Se la camera non funziona, usa questa opzione"
+    )
+
+    if uploaded_file and st.session_state.model:
+        image = Image.open(uploaded_file)
+
+        with st.spinner("🔄 Analizzando immagine caricata..."):
+            analyzed_img, num_people, keypoints, confidence = analyze_image(image, st.session_state.model)
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.image(image, caption="Immagine Caricata", use_column_width=True)
+        with col2:
+            st.image(analyzed_img, caption="Analisi YOLO11", use_column_width=True)
+
+        if num_people > 0:
+            feedback, status = evaluate_simple_pose(keypoints, confidence, exercise_type)
+            if status == "good":
+                st.success(feedback)
+            elif status == "warning":
+                st.warning(feedback)
+            else:
+                st.info(feedback)
 
     # Footer
     st.markdown("---")
-    st.markdown("💪 **Fitness Tracker AI - Ultra Compatible Edition** 🚀")
-    st.markdown("*Ottimizzato per Python 3.13 e deployment cloud*")
+    st.markdown("💪 **Fitness Tracker AI - Camera Cloud Edition** 🚀")
+    st.markdown("*Perfetto per Streamlit Community Cloud - Nessuna webcam server richiesta!*")
 
 if __name__ == "__main__":
     main()
