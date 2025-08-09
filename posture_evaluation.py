@@ -52,12 +52,11 @@ class PostureEvaluator:
         try:
             # Controlla se i landmark necessari sono presenti
             required_landmarks = ['right_hip', 'right_knee', 'right_ankle', 
-                                 'left_hip', 'left_knee', 'left_ankle',
-                                 'left_shoulder']
+                                 'left_hip', 'left_knee', 'left_ankle']
 
             missing_landmarks = [lm for lm in required_landmarks if lm not in landmarks]
             if missing_landmarks:
-                return {'correct': False, 'feedback': f'Landmark mancanti: {missing_landmarks}', 'phase': 'unknown'}
+                return {'correct': False, 'feedback': 'Posizionati meglio davanti alla camera', 'phase': 'unknown'}
 
             # Calcola angoli chiave
             # Angolo ginocchio destro
@@ -108,9 +107,7 @@ class PostureEvaluator:
                 'correct': is_correct,
                 'feedback': feedback,
                 'phase': phase,
-                'knee_angle': knee_angle,
-                'right_knee_angle': right_knee_angle,
-                'left_knee_angle': left_knee_angle
+                'knee_angle': knee_angle
             }
 
         except Exception as e:
@@ -180,9 +177,7 @@ class PostureEvaluator:
                 'correct': is_correct,
                 'feedback': feedback,
                 'phase': phase,
-                'elbow_angle': elbow_angle,
-                'right_elbow_angle': right_elbow_angle,
-                'left_elbow_angle': left_elbow_angle
+                'elbow_angle': elbow_angle
             }
 
         except Exception as e:
@@ -241,7 +236,7 @@ class PostureEvaluator:
             else:
                 phase = 'transition'
 
-            # Controllo stabilità spalle (i gomiti dovrebbero rimanere vicini al corpo)
+            # Controllo stabilità spalle
             if 'left_shoulder' in landmarks and 'right_shoulder' in landmarks:
                 shoulder_width = abs(landmarks['left_shoulder']['x'] - landmarks['right_shoulder']['x'])
                 elbow_width = abs(landmarks['left_elbow']['x'] - landmarks['right_elbow']['x'])
@@ -261,9 +256,7 @@ class PostureEvaluator:
                 'correct': is_correct,
                 'feedback': feedback,
                 'phase': phase,
-                'elbow_angle': elbow_angle,
-                'right_elbow_angle': right_elbow_angle,
-                'left_elbow_angle': left_elbow_angle
+                'elbow_angle': elbow_angle
             }
 
         except Exception as e:
@@ -273,11 +266,5 @@ class PostureEvaluator:
     def get_posture_status_color(self, is_correct):
         """
         Ritorna il colore per l'indicatore di postura
-
-        Args:
-            is_correct: Bool che indica se la postura è corretta
-
-        Returns:
-            str: Codice colore hex
         """
-        return "#00FF00" if is_correct else "#FF0000"  # Verde o Rosso
+        return "#00FF00" if is_correct else "#FF0000"

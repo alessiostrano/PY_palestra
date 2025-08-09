@@ -1,8 +1,15 @@
 """
 Modulo per il rilevamento delle pose usando YOLO11 (Ultralytics)
+VERSIONE FIXED per Render - Risolve problema directory config
 """
 import cv2
 import numpy as np
+import os
+import tempfile
+
+# Fix per la directory di configurazione YOLO
+os.environ['YOLO_CONFIG_DIR'] = '/tmp'
+
 from ultralytics import YOLO
 import torch
 
@@ -20,6 +27,12 @@ class PoseDetector:
             confidence (float): Soglia minima per il rilevamento
         """
         try:
+            # Fix directory permissions per Render
+            self._setup_yolo_env()
+
+            print(f"🤖 Caricamento modello YOLO11: {model_name}")
+            print("⏳ Primo avvio: download del modello in corso...")
+
             # Carica il modello YOLO11 per pose estimation
             self.model = YOLO(model_name)
             self.confidence = confidence
@@ -43,11 +56,34 @@ class PoseDetector:
                 'left_ankle': 15, 'right_ankle': 16
             }
 
-            print("✅ YOLO11 Pose Detection inizializzato correttamente")
+            # Test rapido del modello
+            dummy_image = np.zeros((480, 640, 3), dtype=np.uint8)
+            test_results = self.model(dummy_image, verbose=False)
+
+            print("✅ YOLO11 Pose Detection inizializzato e testato correttamente")
 
         except Exception as e:
             print(f"❌ Errore nell'inizializzazione YOLO11: {e}")
             self.model = None
+
+    def _setup_yolo_env(self):
+        """
+        Setup dell'ambiente YOLO per evitare problemi di permessi
+        """
+        try:
+            # Usa /tmp per le configurazioni YOLO
+            yolo_config_dir = '/tmp/ultralytics'
+            os.makedirs(yolo_config_dir, exist_ok=True)
+            os.environ['YOLO_CONFIG_DIR'] = yolo_config_dir
+
+            # Altre variabili per evitare warning
+            os.environ['WANDB_DISABLED'] = 'true'  # Disabilita wandb logging
+            os.environ['ULTRALYTICS_ANALYTICS'] = 'false'  # Disabilita analytics
+
+            print(f"🔧 YOLO Config Dir: {yolo_config_dir}")
+
+        except Exception as e:
+            print(f"⚠️ Warning setup YOLO env: {e}")
 
     def detect_pose(self, image):
         """
@@ -64,7 +100,7 @@ class PoseDetector:
 
         try:
             # Esegue l'inferenza con YOLO11
-            results = self.model(image, conf=self.confidence, verbose=False)
+            results = self.model(image, conf=self.confidence, verbose=False, save=False)
 
             # Crea una copia dell'immagine per il disegno
             processed_image = image.copy()
@@ -95,7 +131,7 @@ class PoseDetector:
 
         try:
             # Disegna automaticamente usando YOLO11
-            annotated_image = results.plot()
+            annotated_image = results.plot(verbose=False)
             return annotated_image
 
         except Exception as e:
@@ -234,5 +270,6 @@ class PoseDetector:
             'model_type': 'YOLO11 Pose',
             'confidence_threshold': self.confidence,
             'keypoints_count': len(self.keypoint_names),
+            'config_dir': os.environ.get('YOLO_CONFIG_DIR', '/tmp'),
             'status': 'Ready'
         }
